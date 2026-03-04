@@ -1,0 +1,16 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# 環境變數
+.env
+.env.local
+
+# 系統檔案
+.DS_Store
+Thumbs.db
+
+# 日誌
+logs/
+*.log

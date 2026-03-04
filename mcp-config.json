@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "yotta-modbus": {
+      "command": "node",
+      "args": [
+        "/home/node/modbus-bridge/src/index.js"
+      ]
+    }
+  }
+}

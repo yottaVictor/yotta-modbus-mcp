@@ -1,0 +1,13 @@
+{
+    "device": {
+        "name": "A-1869",
+        "ip": "192.168.10.10",
+        "port": 502,
+        "slaveId": 1,
+        "doCount": 8,
+        "doBaseAddress": 16
+    },
+    "token": {
+        "expirySeconds": 60
+    }
+}
