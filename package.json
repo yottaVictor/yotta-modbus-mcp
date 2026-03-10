@@ -1,14 +1,17 @@
 {
   "name": "yotta-modbus-mcp",
-  "version": "1.0.0",
+  "version": "4.4.0",
   "description": "Yotta Modbus TCP MCP Server - 透過 Antigravity AI 控制 I/O 模組",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "start:stream": "node src/stream.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
     "modbus-serial": "^8.0.17",
     "zod": "^3.24.2"
   }
