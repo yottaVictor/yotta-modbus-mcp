@@ -38,16 +38,16 @@ const __dirname = dirname(__filename);
 const configPath = join(__dirname, '..', 'config.json');
 
 let config = JSON.parse(readFileSync(configPath, 'utf-8'));
-let deviceMap = new Map(config.devices.map(d => [d.id, d]));
+let deviceMap = new Map(config.devices.map(d => [d.name, d]));
 
 function saveConfig() {
     writeFileSync(configPath, JSON.stringify(config, null, 4), 'utf-8');
-    deviceMap = new Map(config.devices.map(d => [d.id, d]));
+    deviceMap = new Map(config.devices.map(d => [d.name, d]));
 }
 
-function getDevice(deviceId) {
-    const device = deviceMap.get(deviceId);
-    if (!device) throw new Error(`找不到設備 "${deviceId}"，有效 ID：${[...deviceMap.keys()].join(', ')}`);
+function getDevice(deviceName) {
+    const device = deviceMap.get(deviceName);
+    if (!device) throw new Error(`找不到設備 "${deviceName}"，有效名稱：${[...deviceMap.keys()].join(', ')}`);
     return device;
 }
 
@@ -62,11 +62,11 @@ function initLabels(ioType, count) {
 
 function getLabel(device, ioType, channel) {
     const io = device[ioType];
-    const prefix = ioType.toUpperCase();
-    const defaultName = `${prefix}${channel}`;
+    const defaultName = `${ioType.toUpperCase()}${channel}`;
     const label = io?.labels?.[channel];
+    // A 方案優化：如果已有標籤，直接回傳標籤名稱；否則回傳預設 ID。減少 Token 量。
     if (label && label !== defaultName) {
-        return `${prefix}${channel} (${label})`;
+        return label;
     }
     return defaultName;
 }
@@ -139,12 +139,49 @@ async function writeSingleAo(device, channel, value) {
     await withModbus(device, async (c) => c.writeRegister(io.baseAddress + channel, value));
 }
 
+async function pingDevice(device, timeoutMs = 2000) {
+    const start = Date.now();
+    const client = new ModbusRTU();
+    try {
+        await Promise.race([
+            client.connectTCP(device.ip, { port: device.port }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('TCP 連線超時')), timeoutMs))
+        ]);
+        client.setID(device.slaveId);
+        client.setTimeout(timeoutMs);
+
+        // 嘗試讀取 1 個 Holding Register 驗證 Modbus 通訊
+        try {
+            await client.readHoldingRegisters(0, 1);
+        } catch (modbusErr) {
+            // Modbus Exception（如 Illegal Function / Illegal Data Address）
+            // 代表設備有回應，仍算在線
+            if (modbusErr.modbusCode) {
+                const latency = Date.now() - start;
+                return { online: true, latency, note: `Modbus Exception ${modbusErr.modbusCode}（設備有回應）` };
+            }
+            throw modbusErr;
+        }
+
+        const latency = Date.now() - start;
+        return { online: true, latency };
+    } catch (err) {
+        const latency = Date.now() - start;
+        return { online: false, latency, error: err.message };
+    } finally {
+        try {
+            if (client._port?.destroy) client._port.destroy();
+            else if (client.isOpen) await new Promise(r => client.close(r));
+        } catch (_) { }
+    }
+}
+
 // ============================================================
 // MCP Server 工廠（每次呼叫建立全新實例）
 // ============================================================
 export function createMcpServer() {
-    const server = new McpServer({ name: 'yotta-modbus', version: '4.3.0' });
-    const deviceIdDesc = '設備 ID';
+    const server = new McpServer({ name: 'yotta-modbus', version: '4.4.0' });
+    const deviceIdDesc = '設備名稱（即 name 欄位，例如 "辦公室"）';
     const ioSchema = z.object({ count: z.number().int().min(1), baseAddress: z.number().int().min(0) }).nullable();
 
     // ── 設備管理 ──────────────────────────────────────────────────
@@ -159,8 +196,8 @@ export function createMcpServer() {
     );
 
     server.tool('add_device', '新增一台 Modbus 設備並儲存至 config，立即生效無需重啟。name/port/slaveId 有預設值可省略。', {
-        id: z.string().describe('唯一識別碼，例如 "A1869-2F"'),
-        name: z.string().optional().describe('設備名稱（預設同 id）'),
+        id: z.string().describe('設備型號，僅供查詢 I/O 規格參考，相同型號允許新增多台（例如 "A1869"）'),
+        name: z.string().optional().describe('設備名稱，作為唯一識別依據（預設同 id）。同名設備不允許重複新增'),
         ip: z.string().describe('IP 位址'),
         port: z.number().int().optional().describe('TCP Port（預設 502）'),
         slaveId: z.number().int().min(1).max(247).optional().describe('Modbus Slave ID（預設 1）'),
@@ -170,15 +207,18 @@ export function createMcpServer() {
         ao: ioSchema.optional().describe('AO 設定，無則省略'),
     }, async ({ id, name, ip, port = 502, slaveId = 1, do: doIO = null, di = null, ai = null, ao = null }) => {
         try {
-            if (deviceMap.has(id)) throw new Error(`設備 ID "${id}" 已存在`);
-            const dev = { id, name: name ?? id, ip, port, slaveId, do: doIO, di, ai, ao };
+            const deviceName = name ?? id;
+            if (deviceMap.has(deviceName)) throw new Error(`設備名稱 "${deviceName}" 已存在，請使用不同的 name`);
+            const conflict = config.devices.find(d => d.ip === ip && d.port === port);
+            if (conflict) throw new Error(`IP ${ip}:${port} 已被設備 "${conflict.name}" 使用，請更換 IP 或 Port`);
+            const dev = { id, name: deviceName, ip, port, slaveId, do: doIO, di, ai, ao };
             for (const t of ['do', 'di', 'ai', 'ao']) {
                 if (dev[t] && !dev[t].labels) dev[t].labels = initLabels(t, dev[t].count);
             }
             config.devices.push(dev);
             saveConfig();
             const ios = ['do', 'di', 'ai', 'ao'].filter(t => dev[t]).map(t => `${t.toUpperCase()}×${dev[t].count}`).join(' ');
-            return { content: [{ type: 'text', text: `✅ 設備 "${id}"（${dev.name} ${ip}:${port}）已新增。I/O：${ios || '（無）'}` }] };
+            return { content: [{ type: 'text', text: `✅ 設備型號 "${id}"（名稱：${deviceName}，${ip}:${port}）已新增。I/O：${ios || '（無）'}` }] };
         } catch (err) {
             return { content: [{ type: 'text', text: `❌ ${err.message}` }], isError: true };
         }
@@ -189,7 +229,7 @@ export function createMcpServer() {
     }, async ({ deviceId }) => {
         try {
             getDevice(deviceId);
-            config.devices = config.devices.filter(d => d.id !== deviceId);
+            config.devices = config.devices.filter(d => d.name !== deviceId);
             saveConfig();
             return { content: [{ type: 'text', text: `✅ 設備 "${deviceId}" 已移除` }] };
         } catch (err) {
@@ -205,6 +245,17 @@ export function createMcpServer() {
     }, async ({ deviceId, ...updates }) => {
         try {
             const device = getDevice(deviceId);
+            // 檢查改名後是否與其他設備衝突
+            if (updates.name && updates.name !== device.name && deviceMap.has(updates.name)) {
+                throw new Error(`設備名稱 "${updates.name}" 已被其他設備使用`);
+            }
+            // 檢查改 IP/Port 後是否與其他設備衝突
+            const newIp = updates.ip ?? device.ip;
+            const newPort = updates.port ?? device.port;
+            if (newIp !== device.ip || newPort !== device.port) {
+                const conflict = config.devices.find(d => d.name !== device.name && d.ip === newIp && d.port === newPort);
+                if (conflict) throw new Error(`IP ${newIp}:${newPort} 已被設備 "${conflict.name}" 使用`);
+            }
             Object.assign(device, updates);
             saveConfig();
             return { content: [{ type: 'text', text: `✅ 設備 "${deviceId}" 已更新：${JSON.stringify(updates)}` }] };
@@ -222,6 +273,37 @@ export function createMcpServer() {
             const ios = ['do', 'di', 'ai', 'ao'].filter(t => spec[t])
                 .map(t => `${t.toUpperCase()}×${spec[t].count}（baseAddress: ${spec[t].baseAddress}）`).join('\n  ');
             return { content: [{ type: 'text', text: `📋 ${model} 規格：\n\n  ${ios || '（無 I/O）'}` }] };
+        } catch (err) {
+            return { content: [{ type: 'text', text: `❌ ${err.message}` }], isError: true };
+        }
+    });
+
+    server.tool('ping_device', '檢測設備 Modbus TCP 是否可連線，回傳回應時間。deviceId 傳 "all" 可一次 ping 全部設備。', {
+        deviceId: z.string().describe('設備 ID，或 "all" 一次 ping 全部設備')
+    }, async ({ deviceId }) => {
+        try {
+            if (deviceId === 'all') {
+                if (config.devices.length === 0) {
+                    return { content: [{ type: 'text', text: '📋 目前沒有已註冊的設備' }] };
+                }
+                const results = [];
+                for (const d of config.devices) {
+                    const r = await pingDevice(d);
+                    results.push(r.online
+                        ? `✅ ${d.id}　${d.name}（${d.ip}:${d.port}）　${r.latency}ms`
+                        : `❌ ${d.id}　${d.name}（${d.ip}:${d.port}）　失敗：${r.error}`
+                    );
+                }
+                return { content: [{ type: 'text', text: `🏓 全部設備 Ping 結果：\n\n${results.join('\n')}` }] };
+            } else {
+                const d = getDevice(deviceId);
+                const r = await pingDevice(d);
+                if (r.online) {
+                    return { content: [{ type: 'text', text: `✅ ${d.name}（${d.ip}:${d.port}）連線正常，回應時間 ${r.latency}ms` }] };
+                } else {
+                    return { content: [{ type: 'text', text: `❌ ${d.name}（${d.ip}:${d.port}）連線失敗：${r.error}（${r.latency}ms）` }] };
+                }
+            }
         } catch (err) {
             return { content: [{ type: 'text', text: `❌ ${err.message}` }], isError: true };
         }
@@ -285,19 +367,19 @@ export function createMcpServer() {
             const sections = [];
             if ((type === 'all' || type === 'do') && d.do) {
                 const s = await readDo(d);
-                sections.push(`📡 DO 狀態：`, ...s.map((v, i) => `  ${getLabel(d, 'do', i)}: ${v ? 'ON 🟢' : 'OFF ⚫'}`));
+                sections.push(`📡 DO:`, ...s.map((v, i) => `  ${getLabel(d, 'do', i)}: ${v ? 'ON' : 'OFF'}`));
             }
             if ((type === 'all' || type === 'di') && d.di) {
                 const s = await readDi(d);
-                sections.push(`📥 DI 狀態：`, ...s.map((v, i) => `  ${getLabel(d, 'di', i)}: ${v ? 'ON 🟢' : 'OFF ⚫'}`));
+                sections.push(`📥 DI:`, ...s.map((v, i) => `  ${getLabel(d, 'di', i)}: ${v ? 'ON' : 'OFF'}`));
             }
             if ((type === 'all' || type === 'ai') && d.ai) {
                 const s = await readAi(d);
-                sections.push(`📊 AI 數值：`, ...s.map((v, i) => `  ${getLabel(d, 'ai', i)}: ${v}`));
+                sections.push(`📊 AI:`, ...s.map((v, i) => `  ${getLabel(d, 'ai', i)}: ${v}`));
             }
             if ((type === 'all' || type === 'ao') && d.ao) {
                 const s = await readAo(d);
-                sections.push(`📤 AO 數值：`, ...s.map((v, i) => `  ${getLabel(d, 'ao', i)}: ${v}`));
+                sections.push(`📤 AO:`, ...s.map((v, i) => `  ${getLabel(d, 'ao', i)}: ${v}`));
             }
             if (sections.length === 0) {
                 return { content: [{ type: 'text', text: `⚠️ ${d.name}（${d.ip}）不具備 ${type.toUpperCase()} 通道` }] };
@@ -325,7 +407,7 @@ export function createMcpServer() {
             } else {
                 await writeMultipleDo(d, operations);
                 const details = operations.map(op => `${getLabel(d, 'do', op.channel)}→${op.value ? 'ON' : 'OFF'}`).join(', ');
-                return { content: [{ type: 'text', text: `✅ ${d.name}（${d.ip}）批量操作完成：${details}` }] };
+                return { content: [{ type: 'text', text: `✅ ${d.name} 批量完成: ${details}` }] };
             }
         } catch (err) {
             return { content: [{ type: 'text', text: `❌ ${err.message}` }], isError: true };

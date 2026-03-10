@@ -63,7 +63,7 @@
                 "count": 2,
                 "baseAddress": 0,
                 "labels": [
-                    "大門狀態",
+                    "",
                     "DI1"
                 ]
             },
@@ -85,6 +85,30 @@
                     "馬達"
                 ]
             }
+        },
+        {
+            "id": "A1869-書房",
+            "name": "書房",
+            "ip": "192.168.0.17",
+            "port": 10504,
+            "slaveId": 1,
+            "do": {
+                "count": 8,
+                "baseAddress": 16,
+                "labels": [
+                    "DO0",
+                    "DO1",
+                    "DO2",
+                    "DO3",
+                    "DO4",
+                    "DO5",
+                    "DO6",
+                    "DO7"
+                ]
+            },
+            "di": null,
+            "ai": null,
+            "ao": null
         }
     ]
 }
