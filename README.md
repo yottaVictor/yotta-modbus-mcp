@@ -55,31 +55,7 @@ npm start
 }
 ```
 
-或使用 remote 模式：
-
-```json
-{
-  "mcp": {
-    "yotta-modbus-mcp": {
-      "type": "remote",
-      "url": "http://localhost:4096/mcp",
-      "enabled": true
-    }
-  }
-}
-```
-
-先啟動 MCP server：
-
-```bash
-npm start
-```
-
-再啟用 opencode serve：
-
-```bash
-opencode serve --port 4096
-```
+設定完成後，opencode 會自動啟動 MCP server。
 
 ## Antigravity 設定
 
