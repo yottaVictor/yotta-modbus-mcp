@@ -38,6 +38,67 @@ npm start
 | `write_do` | 控制 DO 通道 |
 | `write_ao` | 寫入 AO 值 |
 
+## OpenCode 設定
+
+在 `~/.config/opencode/opencode.json` 加入：
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "yotta-modbus-mcp": {
+      "type": "local",
+      "command": ["node", "path/to/2_yotta_modbus_mcp/src/index.js"],
+      "enabled": true
+    }
+  }
+}
+```
+
+或使用 remote 模式：
+
+```json
+{
+  "mcp": {
+    "yotta-modbus-mcp": {
+      "type": "remote",
+      "url": "http://localhost:4096/mcp",
+      "enabled": true
+    }
+  }
+}
+```
+
+先啟動 MCP server：
+
+```bash
+npm start
+```
+
+再啟用 opencode serve：
+
+```bash
+opencode serve --port 4096
+```
+
+## Antigravity 設定
+
+在專案根目錄建立 `.antigravity/settings.json`：
+
+```json
+{
+  "mcp": {
+    "servers": [
+      {
+        "name": "yotta-modbus-mcp",
+        "command": ["node", "path/to/2_yotta_modbus_mcp/src/index.js"],
+        "env": {}
+      }
+    ]
+  }
+}
+```
+
 ## 設定檔
 
 `config.json` - 設備 I/O 設定
