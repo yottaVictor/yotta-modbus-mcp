@@ -11,12 +11,12 @@
                 "baseAddress": 16,
                 "labels": [
                     "大燈",
-                    "DO1",
-                    "DO2",
+                    "戶外燈",
+                    "大門",
                     "DO3",
                     "DO4",
                     "電動門",
-                    "DO6",
+                    "大燈",
                     "大燈"
                 ]
             },
@@ -34,7 +34,17 @@
             "di": null,
             "ai": {
                 "count": 8,
-                "baseAddress": 0
+                "baseAddress": 0,
+                "labels": [
+                    "AI0",
+                    "AI1",
+                    "AI2",
+                    "AI3",
+                    "AI4",
+                    "AI5",
+                    "AI6",
+                    "AI7"
+                ]
             },
             "ao": null
         },
@@ -46,7 +56,17 @@
             "slaveId": 1,
             "do": {
                 "count": 8,
-                "baseAddress": 16
+                "baseAddress": 16,
+                "labels": [
+                    "DO0",
+                    "DO1",
+                    "DO2",
+                    "DO3",
+                    "DO4",
+                    "DO5",
+                    "DO6",
+                    "DO7"
+                ]
             },
             "di": null,
             "ai": null,
@@ -63,8 +83,8 @@
                 "count": 2,
                 "baseAddress": 0,
                 "labels": [
-                    "",
-                    "DI1"
+                    "大門",
+                    "馬達狀態"
                 ]
             },
             "ai": {
@@ -82,7 +102,7 @@
                 "baseAddress": 16,
                 "labels": [
                     "AO0",
-                    "馬達"
+                    "馬達轉速"
                 ]
             }
         },
@@ -107,6 +127,63 @@
                 ]
             },
             "di": null,
+            "ai": null,
+            "ao": null
+        },
+        {
+            "id": "A-1869",
+            "name": "鐵捲門",
+            "ip": "192.168.0.152",
+            "port": 502,
+            "slaveId": 3,
+            "do": {
+                "count": 8,
+                "baseAddress": 16,
+                "labels": [
+                    "DO0",
+                    "DO1",
+                    "DO2",
+                    "DO3",
+                    "DO4",
+                    "DO5",
+                    "DO6",
+                    "DO7"
+                ]
+            },
+            "di": null,
+            "ai": null,
+            "ao": null
+        },
+        {
+            "id": "A-1855",
+            "name": "小木屋",
+            "ip": "192.168.10.11",
+            "port": 502,
+            "slaveId": 1,
+            "do": {
+                "count": 4,
+                "baseAddress": 16,
+                "labels": [
+                    "大燈",
+                    "DO1",
+                    "DO2",
+                    "DO3"
+                ]
+            },
+            "di": {
+                "count": 8,
+                "baseAddress": 0,
+                "labels": [
+                    "DI0",
+                    "DI1",
+                    "DI2",
+                    "DI3",
+                    "DI4",
+                    "DI5",
+                    "DI6",
+                    "DI7"
+                ]
+            },
             "ai": null,
             "ao": null
         }

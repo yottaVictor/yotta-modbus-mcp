@@ -8,7 +8,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import ModbusRTU from 'modbus-serial';
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { lookupSpec } from './device-specs.js';
@@ -37,8 +37,36 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const configPath = join(__dirname, '..', 'config.json');
 
-let config = JSON.parse(readFileSync(configPath, 'utf-8'));
-let deviceMap = new Map(config.devices.map(d => [d.name, d]));
+let config;
+let deviceMap;
+
+function initLabels(ioType, count) {
+    return Array.from({ length: count }, (_, i) => `${ioType.toUpperCase()}${i}`);
+}
+
+if (!existsSync(configPath)) {
+    console.log(`[系統] 找不到設定檔 ${configPath}，正在建立預設空設定...`);
+    config = { devices: [] };
+    writeFileSync(configPath, JSON.stringify(config, null, 4), 'utf-8');
+    deviceMap = new Map();
+} else {
+    config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    // 為缺少 labels 的既有設備補上預設通道名稱（如 DO0、DO1...）
+    let configDirty = false;
+    for (const dev of config.devices) {
+        for (const t of ['do', 'di', 'ai', 'ao']) {
+            if (dev[t] && !dev[t].labels) {
+                dev[t].labels = initLabels(t, dev[t].count);
+                configDirty = true;
+            }
+        }
+    }
+    if (configDirty) {
+        writeFileSync(configPath, JSON.stringify(config, null, 4), 'utf-8');
+        console.log('[系統] 已為缺少 labels 的設備補上預設通道名稱');
+    }
+    deviceMap = new Map(config.devices.map(d => [d.name, d]));
+}
 
 function saveConfig() {
     writeFileSync(configPath, JSON.stringify(config, null, 4), 'utf-8');
@@ -56,17 +84,13 @@ function requireIO(device, ioType) {
     return device[ioType];
 }
 
-function initLabels(ioType, count) {
-    return Array.from({ length: count }, (_, i) => `${ioType.toUpperCase()}${i}`);
-}
-
 function getLabel(device, ioType, channel) {
     const io = device[ioType];
     const defaultName = `${ioType.toUpperCase()}${channel}`;
     const label = io?.labels?.[channel];
-    // A 方案優化：如果已有標籤，直接回傳標籤名稱；否則回傳預設 ID。減少 Token 量。
+    // 強制保留實體編號與標籤，確保 LLM 在面對同名標籤時，仍能透過實體編號區分
     if (label && label !== defaultName) {
-        return label;
+        return `${defaultName} (${label})`;
     }
     return defaultName;
 }
@@ -195,30 +219,46 @@ export function createMcpServer() {
         }
     );
 
-    server.tool('add_device', '新增一台 Modbus 設備並儲存至 config，立即生效無需重啟。name/port/slaveId 有預設值可省略。', {
+    server.tool('add_device', '新增一台 Modbus 設備並儲存至 config，立即生效無需重啟。I/O 規格會自動從設備型號規格庫查詢填入，無需手動指定。name/ip/port/ 有預設值可省略。', {
         id: z.string().describe('設備型號，僅供查詢 I/O 規格參考，相同型號允許新增多台（例如 "A1869"）'),
         name: z.string().optional().describe('設備名稱，作為唯一識別依據（預設同 id）。同名設備不允許重複新增'),
         ip: z.string().describe('IP 位址'),
         port: z.number().int().optional().describe('TCP Port（預設 502）'),
         slaveId: z.number().int().min(1).max(247).optional().describe('Modbus Slave ID（預設 1）'),
-        do: ioSchema.optional().describe('DO 設定，無則省略'),
-        di: ioSchema.optional().describe('DI 設定，無則省略'),
-        ai: ioSchema.optional().describe('AI 設定，無則省略'),
-        ao: ioSchema.optional().describe('AO 設定，無則省略'),
+        do: ioSchema.optional().describe('DO 設定，無則省略（未提供時自動從規格庫查詢）'),
+        di: ioSchema.optional().describe('DI 設定，無則省略（未提供時自動從規格庫查詢）'),
+        ai: ioSchema.optional().describe('AI 設定，無則省略（未提供時自動從規格庫查詢）'),
+        ao: ioSchema.optional().describe('AO 設定，無則省略（未提供時自動從規格庫查詢）'),
     }, async ({ id, name, ip, port = 502, slaveId = 1, do: doIO = null, di = null, ai = null, ao = null }) => {
         try {
             const deviceName = name ?? id;
             if (deviceMap.has(deviceName)) throw new Error(`設備名稱 "${deviceName}" 已存在，請使用不同的 name`);
             const conflict = config.devices.find(d => d.ip === ip && d.port === port);
             if (conflict) throw new Error(`IP ${ip}:${port} 已被設備 "${conflict.name}" 使用，請更換 IP 或 Port`);
-            const dev = { id, name: deviceName, ip, port, slaveId, do: doIO, di, ai, ao };
+
+            // 若 LLM 未提供 IO 配置，自動從設備規格庫查詢並補上
+            let resolvedDo = doIO, resolvedDi = di, resolvedAi = ai, resolvedAo = ao;
+            const allNull = !doIO && !di && !ai && !ao;
+            if (allNull) {
+                const spec = lookupSpec(id);
+                if (spec) {
+                    resolvedDo = spec.do ? { ...spec.do } : null;
+                    resolvedDi = spec.di ? { ...spec.di } : null;
+                    resolvedAi = spec.ai ? { ...spec.ai } : null;
+                    resolvedAo = spec.ao ? { ...spec.ao } : null;
+                    console.log(`[系統] 設備 "${deviceName}" 未指定 I/O，已自動套用型號 ${id} 的規格`);
+                }
+            }
+
+            const dev = { id, name: deviceName, ip, port, slaveId, do: resolvedDo, di: resolvedDi, ai: resolvedAi, ao: resolvedAo };
             for (const t of ['do', 'di', 'ai', 'ao']) {
                 if (dev[t] && !dev[t].labels) dev[t].labels = initLabels(t, dev[t].count);
             }
             config.devices.push(dev);
             saveConfig();
             const ios = ['do', 'di', 'ai', 'ao'].filter(t => dev[t]).map(t => `${t.toUpperCase()}×${dev[t].count}`).join(' ');
-            return { content: [{ type: 'text', text: `✅ 設備型號 "${id}"（名稱：${deviceName}，${ip}:${port}）已新增。I/O：${ios || '（無）'}` }] };
+            const autoNote = allNull && (resolvedDo || resolvedDi || resolvedAi || resolvedAo) ? '（已自動從規格庫填入 I/O）' : '';
+            return { content: [{ type: 'text', text: `✅ 設備型號 "${id}"（名稱：${deviceName}，${ip}:${port}）已新增。I/O：${ios || '（無）'}${autoNote}` }] };
         } catch (err) {
             return { content: [{ type: 'text', text: `❌ ${err.message}` }], isError: true };
         }
@@ -264,7 +304,7 @@ export function createMcpServer() {
         }
     });
 
-    server.tool('lookup_device_spec', '依 Yotta 設備型號查詢 I/O 規格（DO/DI/AI/AO 數量與 Modbus 位址），可搭配 add_device 使用。', {
+    server.tool('lookup_device_spec', '依 Yotta 設備型號查詢 I/O 規格（DO/DI/AI/AO 數量與 Modbus 位址）。', {
         model: z.string().describe('設備型號，例如 "A-1812"')
     }, async ({ model }) => {
         try {
@@ -286,14 +326,15 @@ export function createMcpServer() {
                 if (config.devices.length === 0) {
                     return { content: [{ type: 'text', text: '📋 目前沒有已註冊的設備' }] };
                 }
-                const results = [];
-                for (const d of config.devices) {
-                    const r = await pingDevice(d);
-                    results.push(r.online
-                        ? `✅ ${d.id}　${d.name}（${d.ip}:${d.port}）　${r.latency}ms`
-                        : `❌ ${d.id}　${d.name}（${d.ip}:${d.port}）　失敗：${r.error}`
-                    );
-                }
+                // 並行 ping 所有設備，無需逐台等待 timeout
+                const results = await Promise.all(
+                    config.devices.map(async d => {
+                        const r = await pingDevice(d);
+                        return r.online
+                            ? `✅ ${d.id}　${d.name}（${d.ip}:${d.port}）　${r.latency}ms`
+                            : `❌ ${d.id}　${d.name}（${d.ip}:${d.port}）　失敗：${r.error}`;
+                    })
+                );
                 return { content: [{ type: 'text', text: `🏓 全部設備 Ping 結果：\n\n${results.join('\n')}` }] };
             } else {
                 const d = getDevice(deviceId);
@@ -360,27 +401,51 @@ export function createMcpServer() {
     // ── I/O 讀取 ─────────────────────────────────────────────────
     server.tool('read_io', '讀取指定設備的 I/O 通道狀態。type=all 可一次讀取全部通道。', {
         deviceId: z.string().describe(deviceIdDesc),
-        type: z.enum(['do', 'di', 'ai', 'ao', 'all']).describe('通道類型：do=數位輸出(FC01) / di=數位輸入(FC02) / ai=類比輸入(FC04) / ao=類比輸出(FC03) / all=全部')
+        type: z.enum(['do', 'di', 'ai', 'ao', 'all']).describe('通道類型：do/di/ai/ao/all')
     }, async ({ deviceId, type }) => {
         try {
             const d = getDevice(deviceId);
             const sections = [];
-            if ((type === 'all' || type === 'do') && d.do) {
-                const s = await readDo(d);
-                sections.push(`📡 DO:`, ...s.map((v, i) => `  ${getLabel(d, 'do', i)}: ${v ? 'ON' : 'OFF'}`));
+
+            if (type === 'all') {
+                // 單一 TCP 連線讀取全部 I/O，避免 4 次重複建立連線
+                await withModbus(d, async (c) => {
+                    if (d.do) {
+                        const s = (await c.readCoils(d.do.baseAddress, d.do.count)).data.slice(0, d.do.count);
+                        sections.push(`📡 DO:`, ...s.map((v, i) => `  ${getLabel(d, 'do', i)}: ${v ? 'ON' : 'OFF'}`));
+                    }
+                    if (d.di) {
+                        const s = (await c.readDiscreteInputs(d.di.baseAddress, d.di.count)).data.slice(0, d.di.count);
+                        sections.push(`📥 DI:`, ...s.map((v, i) => `  ${getLabel(d, 'di', i)}: ${v ? 'ON' : 'OFF'}`));
+                    }
+                    if (d.ai) {
+                        const s = (await c.readInputRegisters(d.ai.baseAddress, d.ai.count)).data.slice(0, d.ai.count);
+                        sections.push(`📊 AI:`, ...s.map((v, i) => `  ${getLabel(d, 'ai', i)}: ${v}`));
+                    }
+                    if (d.ao) {
+                        const s = (await c.readHoldingRegisters(d.ao.baseAddress, d.ao.count)).data.slice(0, d.ao.count);
+                        sections.push(`📤 AO:`, ...s.map((v, i) => `  ${getLabel(d, 'ao', i)}: ${v}`));
+                    }
+                });
+            } else {
+                if (type === 'do' && d.do) {
+                    const s = await readDo(d);
+                    sections.push(`📡 DO:`, ...s.map((v, i) => `  ${getLabel(d, 'do', i)}: ${v ? 'ON' : 'OFF'}`));
+                }
+                if (type === 'di' && d.di) {
+                    const s = await readDi(d);
+                    sections.push(`📥 DI:`, ...s.map((v, i) => `  ${getLabel(d, 'di', i)}: ${v ? 'ON' : 'OFF'}`));
+                }
+                if (type === 'ai' && d.ai) {
+                    const s = await readAi(d);
+                    sections.push(`📊 AI:`, ...s.map((v, i) => `  ${getLabel(d, 'ai', i)}: ${v}`));
+                }
+                if (type === 'ao' && d.ao) {
+                    const s = await readAo(d);
+                    sections.push(`📤 AO:`, ...s.map((v, i) => `  ${getLabel(d, 'ao', i)}: ${v}`));
+                }
             }
-            if ((type === 'all' || type === 'di') && d.di) {
-                const s = await readDi(d);
-                sections.push(`📥 DI:`, ...s.map((v, i) => `  ${getLabel(d, 'di', i)}: ${v ? 'ON' : 'OFF'}`));
-            }
-            if ((type === 'all' || type === 'ai') && d.ai) {
-                const s = await readAi(d);
-                sections.push(`📊 AI:`, ...s.map((v, i) => `  ${getLabel(d, 'ai', i)}: ${v}`));
-            }
-            if ((type === 'all' || type === 'ao') && d.ao) {
-                const s = await readAo(d);
-                sections.push(`📤 AO:`, ...s.map((v, i) => `  ${getLabel(d, 'ao', i)}: ${v}`));
-            }
+
             if (sections.length === 0) {
                 return { content: [{ type: 'text', text: `⚠️ ${d.name}（${d.ip}）不具備 ${type.toUpperCase()} 通道` }] };
             }
@@ -396,7 +461,7 @@ export function createMcpServer() {
         operations: z.array(z.object({
             channel: z.number().int().min(0).describe('DO 通道編號（0 起始）'),
             value: z.number().int().min(0).max(1).describe('0=關閉, 1=開啟')
-        })).min(1).describe('操作清單，單個操作傳 1 個元素，批量傳多個。注意：channel 直接對應設備的 DO 編號，例如使用者說「DO5」就傳 channel=5，DO0 就傳 channel=0，不需要做任何加減轉換')
+        })).min(1).describe('操作清單，可單個或批量。channel 直接對應 DO 編號（DO5 → channel=5，無需轉換）')
     }, async ({ deviceId, operations }) => {
         try {
             const d = getDevice(deviceId);
