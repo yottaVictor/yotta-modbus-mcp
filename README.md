@@ -13,13 +13,8 @@
 ## 安裝
 
 ```bash
+cd yotta-modbus-mcp
 npm install
-```
-
-## 啟動
-
-```bash
-npm start
 ```
 
 ## 可用工具
@@ -48,7 +43,7 @@ npm start
   "mcp": {
     "yotta-modbus-mcp": {
       "type": "local",
-      "command": ["node", "path/to/2_yotta_modbus_mcp/src/index.js"],
+      "command": ["node", "path/to/yotta-modbus-mcp/src/index.js"],
       "enabled": true
     }
   }
@@ -67,7 +62,7 @@ npm start
     "servers": [
       {
         "name": "yotta-modbus-mcp",
-        "command": ["node", "path/to/2_yotta_modbus_mcp/src/index.js"],
+        "command": ["node", "path/to/yotta-modbus-mcp/src/index.js"],
         "env": {}
       }
     ]
